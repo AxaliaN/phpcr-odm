@@ -19,10 +19,8 @@
 
 namespace Doctrine\ODM\PHPCR;
 
-use InvalidArgumentException;
-
-use Doctrine\ODM\PHPCR\DocumentManager;
-
+use Doctrine\Common\Util\ClassUtils;
+use Doctrine\ODM\PHPCR\Exception\ClassMismatchException;
 use PHPCR\NodeInterface;
 use PHPCR\PropertyType;
 
@@ -33,19 +31,39 @@ use PHPCR\PropertyType;
  */
 class DocumentClassMapper implements DocumentClassMapperInterface
 {
+    private function expandClassName(DocumentManager $dm, $className = null)
+    {
+        if (null === $className) {
+            return null;
+        }
+
+        if (false !== strstr($className, ':')) {
+            $className = $dm->getClassMetadata($className)->getName();
+        }
+
+        return ClassUtils::getRealClass($className);
+    }
+
     /**
      * {@inheritDoc}
      */
     public function getClassName(DocumentManager $dm, NodeInterface $node, $className = null)
     {
+        $className = $this->expandClassName($dm, $className);
+
         if ($node->hasProperty('phpcr:class')) {
             $nodeClassName = $node->getProperty('phpcr:class')->getString();
 
-            if (empty($className) || is_subclass_of($nodeClassName, $className)) {
-                $className = $nodeClassName;
+            if (!empty($className)
+                && $nodeClassName !== $className
+                && !is_subclass_of($nodeClassName, $className)
+            ) {
+                throw ClassMismatchException::incompatibleClasses($node->getPath(), $nodeClassName, $className);
             }
+            $className = $nodeClassName;
         }
-            // default to the built in generic document class
+
+        // default to the built in generic document class
         if (empty($className)) {
             $className = 'Doctrine\\ODM\\PHPCR\\Document\\Generic';
         }
@@ -58,6 +76,8 @@ class DocumentClassMapper implements DocumentClassMapperInterface
      */
     public function writeMetadata(DocumentManager $dm, NodeInterface $node, $className)
     {
+        $className = $this->expandClassName($dm, $className);
+
         if ('Doctrine\\ODM\\PHPCR\\Document\\Generic' !== $className) {
             $node->setProperty('phpcr:class', $className, PropertyType::STRING);
 
@@ -74,11 +94,14 @@ class DocumentClassMapper implements DocumentClassMapperInterface
      */
     public function validateClassName(DocumentManager $dm, $document, $className)
     {
+        $className = $this->expandClassName($dm, $className);
+
         if (!$document instanceof $className) {
-            $class = $dm->getClassMetadata(get_class($document));
-            $path = $class->getIdentifierValue($document);
-            $msg = "Doctrine metadata mismatch! Requested type '$className' type does not match type '".get_class($document)."' stored in the metadata at path '$path'";
-            throw new InvalidArgumentException($msg);
+            throw ClassMismatchException::incompatibleClasses(
+                $dm->getUnitOfWork()->determineDocumentId($document),
+                get_class($document),
+                $className
+            );
         }
     }
 }
